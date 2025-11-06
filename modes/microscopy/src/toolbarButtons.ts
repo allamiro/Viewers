@@ -136,6 +136,17 @@ const toolbarButtons: Button[] = [
       evaluate: 'evaluate.action',
     },
   },
+  {
+    id: 'DownloadStudy',
+    uiType: 'ohif.toolButton',
+    props: {
+      icon: 'Download',
+      label: i18n.t('Buttons:Download'),
+      tooltip: i18n.t('Buttons:Download'),
+      commands: 'downloadStudy',
+      evaluate: 'evaluate.action',
+    },
+  },
 ];
 
 export default toolbarButtons;
