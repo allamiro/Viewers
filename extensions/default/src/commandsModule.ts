@@ -24,6 +24,7 @@ import { useViewportsByPositionStore } from './stores/useViewportsByPositionStor
 import { useToggleOneUpViewportGridStore } from './stores/useToggleOneUpViewportGridStore';
 import requestDisplaySetCreationForStudy from './Panels/requestDisplaySetCreationForStudy';
 import promptSaveReport from './utils/promptSaveReport';
+import downloadStudyAsZip from './utils/downloadStudyAsZip';
 
 export type HangingProtocolParams = {
   protocolId?: string;
@@ -51,6 +52,7 @@ const commandsModule = ({
     viewportGridService,
     displaySetService,
     multiMonitorService,
+    userAuthenticationService,
   } = servicesManager.services;
 
   // Define a context menu controller for use with any context menus
@@ -223,6 +225,101 @@ const commandsModule = ({
       const { StudyInstanceUID } = props;
       promptSaveReport({ servicesManager, commandsManager, extensionManager }, props, {
         data: { StudyInstanceUID },
+      });
+    },
+
+    /**
+     * Downloads the original DICOM instances that belong to a study using the
+     * active data source and packages them as a ZIP archive.
+     */
+    downloadStudy: async ({ StudyInstanceUID, dataSourceName } = {}) => {
+      let studyInstanceUID = StudyInstanceUID;
+
+      if (!studyInstanceUID) {
+        const { activeViewportId, viewports } = viewportGridService.getState();
+        const activeViewport = viewports.get(activeViewportId);
+        const activeDisplaySetInstanceUID = activeViewport?.displaySetInstanceUIDs?.[0];
+
+        if (activeDisplaySetInstanceUID) {
+          const activeDisplaySet = displaySetService.getDisplaySetByUID(
+            activeDisplaySetInstanceUID
+          );
+          studyInstanceUID = activeDisplaySet?.StudyInstanceUID;
+        }
+      }
+
+      if (!studyInstanceUID) {
+        uiNotificationService.show({
+          title: 'Download Study',
+          message: 'Unable to determine which study should be downloaded.',
+          type: 'error',
+        });
+        return;
+      }
+
+      const studyMetadata = DicomMetadataStore.getStudy(studyInstanceUID);
+
+      if (!studyMetadata) {
+        uiNotificationService.show({
+          title: 'Download Study',
+          message: 'Study metadata is not available for download.',
+          type: 'error',
+        });
+        return;
+      }
+
+      const [dataSource] = dataSourceName
+        ? extensionManager.getDataSources(dataSourceName) || []
+        : extensionManager.getActiveDataSource() || [];
+
+      if (!dataSource?.retrieve?.getWadoDicomWebClient) {
+        uiNotificationService.show({
+          title: 'Download Study',
+          message: 'The active data source does not support downloading original DICOM data.',
+          type: 'error',
+        });
+        return;
+      }
+
+      const wadoDicomWebClient = dataSource.retrieve.getWadoDicomWebClient();
+
+      if (!wadoDicomWebClient?.retrieveInstance) {
+        uiNotificationService.show({
+          title: 'Download Study',
+          message: 'The data source is missing DICOMweb retrieve capabilities.',
+          type: 'error',
+        });
+        return;
+      }
+
+      if (userAuthenticationService?.getAuthorizationHeader) {
+        const authHeaders = userAuthenticationService.getAuthorizationHeader();
+        if (authHeaders) {
+          wadoDicomWebClient.headers = {
+            ...wadoDicomWebClient.headers,
+            ...authHeaders,
+          };
+        }
+      }
+
+      const downloadPromise = downloadStudyAsZip({
+        StudyInstanceUID: studyInstanceUID,
+        studyMetadata,
+        retrieveInstance: wadoDicomWebClient.retrieveInstance.bind(wadoDicomWebClient),
+        withCredentials: Boolean(wadoDicomWebClient.withCredentials),
+      });
+
+      uiNotificationService.show({
+        title: 'Download Study',
+        message: 'Preparing original DICOM study download…',
+        promise: downloadPromise,
+        promiseMessages: {
+          loading: 'Preparing original DICOM study download…',
+          success: ({ fileName, count }) =>
+            `Download started: ${fileName} (${count} DICOM instance${count === 1 ? '' : 's'}).`,
+          error: error =>
+            error?.message || 'Unable to prepare the original DICOM study download.',
+        },
       });
     },
 
@@ -789,6 +886,7 @@ const commandsModule = ({
     scrollActiveThumbnailIntoView: actions.scrollActiveThumbnailIntoView,
     addDisplaySetAsLayer: actions.addDisplaySetAsLayer,
     removeDisplaySetLayer: actions.removeDisplaySetLayer,
+    downloadStudy: actions.downloadStudy,
   };
 
   return {
